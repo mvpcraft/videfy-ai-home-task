@@ -632,29 +632,31 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
       store.containerObserver = observer;
 
       canvas.on('selection:created', function(e) {
-        // Enable controls for video objects when selected
+        // Enable controls for all selected objects
         if (e.selected && e.selected.length > 0) {
           e.selected.forEach(obj => {
-            if (obj.type === 'videoImage' || obj.type === 'CoverVideo') {
-              obj.set({
-                hasControls: true,
-                hasBorders: true,
-              });
-            }
+            obj.set({
+              hasControls: true,
+              hasBorders: true,
+              borderColor: '#FF6600',
+              cornerColor: '#FF6600',
+              cornerStrokeColor: '#FF6600',
+            });
           });
         }
         createCustomSelectionOutline();
       });
       canvas.on('selection:updated', function(e) {
-        // Enable controls for video objects when selected
+        // Enable controls for all selected objects
         if (e.selected && e.selected.length > 0) {
           e.selected.forEach(obj => {
-            if (obj.type === 'videoImage' || obj.type === 'CoverVideo') {
-              obj.set({
-                hasControls: true,
-                hasBorders: true,
-              });
-            }
+            obj.set({
+              hasControls: true,
+              hasBorders: true,
+              borderColor: '#FF6600',
+              cornerColor: '#FF6600',
+              cornerStrokeColor: '#FF6600',
+            });
           });
         }
         createCustomSelectionOutline();
@@ -675,9 +677,31 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
         }
       });
       canvas.on('object:moving', function (e) {
-        if (e.target && selectionLayer) {
-          lastActiveObject = e.target;
-          updateControlPointsPositions(e.target);
+        const obj = e.target;
+        if (!obj) return;
+
+        // Clamp so at least 10% of the object stays on-canvas
+        const bound = obj.getBoundingRect();
+        const canvasW = canvas.getWidth();
+        const canvasH = canvas.getHeight();
+        const minVisible = 0.1; // 10%
+        const minX = -(bound.width * (1 - minVisible));
+        const maxX = canvasW - bound.width * minVisible;
+        const minY = -(bound.height * (1 - minVisible));
+        const maxY = canvasH - bound.height * minVisible;
+
+        // Offset between obj.left and bounding rect left
+        const offsetX = obj.left - bound.left;
+        const offsetY = obj.top - bound.top;
+
+        if (bound.left < minX) obj.set('left', minX + offsetX);
+        if (bound.left > maxX) obj.set('left', maxX + offsetX);
+        if (bound.top < minY) obj.set('top', minY + offsetY);
+        if (bound.top > maxY) obj.set('top', maxY + offsetY);
+
+        if (selectionLayer) {
+          lastActiveObject = obj;
+          updateControlPointsPositions(obj);
         }
       });
       
@@ -691,6 +715,38 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
       });
       
       canvas.on('object:modified', function (e) {
+        const obj = e.target;
+        if (obj) {
+          // Snap back if center point is off-canvas after drop
+          const bound = obj.getBoundingRect();
+          const canvasW = canvas.getWidth();
+          const canvasH = canvas.getHeight();
+          const centerX = bound.left + bound.width / 2;
+          const centerY = bound.top + bound.height / 2;
+          const offsetX = obj.left - bound.left;
+          const offsetY = obj.top - bound.top;
+          let snapped = false;
+
+          if (centerX < 0) {
+            obj.set('left', -(bound.width / 2) + offsetX);
+            snapped = true;
+          } else if (centerX > canvasW) {
+            obj.set('left', canvasW - bound.width / 2 + offsetX);
+            snapped = true;
+          }
+          if (centerY < 0) {
+            obj.set('top', -(bound.height / 2) + offsetY);
+            snapped = true;
+          } else if (centerY > canvasH) {
+            obj.set('top', canvasH - bound.height / 2 + offsetY);
+            snapped = true;
+          }
+
+          if (snapped) {
+            obj.setCoords();
+            canvas.renderAll();
+          }
+        }
         if (e.target && selectionLayer) {
           createCustomSelectionOutline();
         }

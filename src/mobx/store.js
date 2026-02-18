@@ -10593,6 +10593,9 @@ export class Store {
   handleObjectModified(fabricObject, element) {
     // Save current state to history before making changes
     if (!this.isUndoRedoOperation) {
+      if (window.dispatchSaveTimelineState) {
+        window.dispatchSaveTimelineState(this);
+      }
     }
 
     const placement = element.placement;
