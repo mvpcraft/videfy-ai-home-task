@@ -111,6 +111,14 @@ export class Store {
       accumulatedMoves: new Map(),
     };
 
+    // Canvas selection state for tracking selected item and drag lifecycle
+    this.canvasSelection = observable({
+      selectedElementId: null,
+      isDragging: false,
+      dragStartPosition: null, // {x, y}
+      isOffCanvas: false,
+    });
+
     // Bind methods
     this.handleObjectModified = this.handleObjectModified.bind(this);
 
@@ -737,6 +745,7 @@ export class Store {
     });
 
     makeAutoObservable(this, {
+      canvasSelection: false,
       dragState: false,
       moveState: false,
       history: false,
@@ -7538,6 +7547,11 @@ export class Store {
     const previousElement = this.selectedElement;
     this.selectedElement = selectedElement;
 
+    // Sync canvas selection state
+    runInAction(() => {
+      this.canvasSelection.selectedElementId = selectedElement?.id ?? null;
+    });
+
     // Dispatch events for element selection changes
     if (selectedElement && selectedElement !== previousElement) {
       window.dispatchEvent(
@@ -7564,6 +7578,29 @@ export class Store {
       // Clear guidelines when no element is selected
       this.clearGuidelines();
     }
+  }
+
+  startCanvasDrag(element) {
+    runInAction(() => {
+      this.canvasSelection.isDragging = true;
+      this.canvasSelection.dragStartPosition = element?.fabricObject
+        ? { x: element.fabricObject.left, y: element.fabricObject.top }
+        : null;
+    });
+  }
+
+  endCanvasDrag() {
+    runInAction(() => {
+      this.canvasSelection.isDragging = false;
+      this.canvasSelection.dragStartPosition = null;
+      this.canvasSelection.isOffCanvas = false;
+    });
+  }
+
+  setCanvasItemOffCanvas(isOff) {
+    runInAction(() => {
+      this.canvasSelection.isOffCanvas = isOff;
+    });
   }
 
   updateSelectedElement() {

@@ -680,24 +680,18 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
         const obj = e.target;
         if (!obj) return;
 
-        // Clamp so at least 10% of the object stays on-canvas
-        const bound = obj.getBoundingRect();
-        const canvasW = canvas.getWidth();
-        const canvasH = canvas.getHeight();
-        const minVisible = 0.1; // 10%
-        const minX = -(bound.width * (1 - minVisible));
-        const maxX = canvasW - bound.width * minVisible;
-        const minY = -(bound.height * (1 - minVisible));
-        const maxY = canvasH - bound.height * minVisible;
+        // Track drag lifecycle - start drag on first move event
+        if (!store.canvasSelection.isDragging) {
+          const element = store.editorElements.find(
+            el => el.fabricObject === obj
+          );
+          if (element) {
+            store.startCanvasDrag(element);
+          }
+        }
 
-        // Offset between obj.left and bounding rect left
-        const offsetX = obj.left - bound.left;
-        const offsetY = obj.top - bound.top;
-
-        if (bound.left < minX) obj.set('left', minX + offsetX);
-        if (bound.left > maxX) obj.set('left', maxX + offsetX);
-        if (bound.top < minY) obj.set('top', minY + offsetY);
-        if (bound.top > maxY) obj.set('top', maxY + offsetY);
+        // No position clamping during drag — allow free off-canvas movement.
+        // Snap-back happens on drop (mouse:up / object:modified).
 
         if (selectionLayer) {
           lastActiveObject = obj;
@@ -717,28 +711,28 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
       canvas.on('object:modified', function (e) {
         const obj = e.target;
         if (obj) {
-          // Snap back if center point is off-canvas after drop
+          // Snap back so at least 40px of the item is visible on-canvas
           const bound = obj.getBoundingRect();
           const canvasW = canvas.getWidth();
           const canvasH = canvas.getHeight();
-          const centerX = bound.left + bound.width / 2;
-          const centerY = bound.top + bound.height / 2;
           const offsetX = obj.left - bound.left;
           const offsetY = obj.top - bound.top;
+          const snapInset = 40;
+          const bottomMaxTop = 250;
           let snapped = false;
 
-          if (centerX < 0) {
-            obj.set('left', -(bound.width / 2) + offsetX);
+          if (bound.left + bound.width < snapInset) {
+            obj.set('left', -(bound.width - snapInset) + offsetX);
             snapped = true;
-          } else if (centerX > canvasW) {
-            obj.set('left', canvasW - bound.width / 2 + offsetX);
+          } else if (bound.left > canvasW - snapInset) {
+            obj.set('left', canvasW - snapInset + offsetX);
             snapped = true;
           }
-          if (centerY < 0) {
-            obj.set('top', -(bound.height / 2) + offsetY);
+          if (bound.top + bound.height < snapInset) {
+            obj.set('top', -(bound.height - snapInset) + offsetY);
             snapped = true;
-          } else if (centerY > canvasH) {
-            obj.set('top', canvasH - bound.height / 2 + offsetY);
+          } else if (bound.top > bottomMaxTop) {
+            obj.set('top', bottomMaxTop + offsetY);
             snapped = true;
           }
 
@@ -799,6 +793,49 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
         }, 100);
       });
       canvas.on('mouse:up', e => {
+        // Snap back item if its center is off-canvas after drag
+        if (store.canvasSelection.isDragging) {
+          const obj = canvas.getActiveObject();
+          if (obj) {
+            const bound = obj.getBoundingRect();
+            const canvasW = canvas.getWidth();
+            const canvasH = canvas.getHeight();
+            const offsetX = obj.left - bound.left;
+            const offsetY = obj.top - bound.top;
+            const snapInset = 40; // push 40px back inside the canvas
+            // Bottom: keep item above video controls — use 30% of canvas height
+            const bottomMaxTop = canvasH * 0.7;
+            let snapped = false;
+
+            // Left edge: right side of item goes past left edge
+            if (bound.left + bound.width < snapInset) {
+              obj.set('left', -(bound.width - snapInset) + offsetX);
+              snapped = true;
+            }
+            // Right edge: left side of item goes past right edge
+            else if (bound.left > canvasW - snapInset) {
+              obj.set('left', canvasW - snapInset + offsetX);
+              snapped = true;
+            }
+            // Top edge: bottom of item goes past top edge
+            if (bound.top + bound.height < snapInset) {
+              obj.set('top', -(bound.height - snapInset) + offsetY);
+              snapped = true;
+            }
+            // Bottom edge: keep item top above video controls area
+            else if (bound.top > bottomMaxTop) {
+              obj.set('top', bottomMaxTop + offsetY);
+              snapped = true;
+            }
+
+            if (snapped) {
+              obj.setCoords();
+              canvas.renderAll();
+            }
+          }
+          store.endCanvasDrag();
+        }
+
         if (canvas.getActiveObject()) {
           lastActiveObject = canvas.getActiveObject();
         }
