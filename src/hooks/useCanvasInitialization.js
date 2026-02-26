@@ -632,29 +632,31 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
       store.containerObserver = observer;
 
       canvas.on('selection:created', function(e) {
-        // Enable controls for video objects when selected
+        // Enable controls for all selected objects
         if (e.selected && e.selected.length > 0) {
           e.selected.forEach(obj => {
-            if (obj.type === 'videoImage' || obj.type === 'CoverVideo') {
-              obj.set({
-                hasControls: true,
-                hasBorders: true,
-              });
-            }
+            obj.set({
+              hasControls: true,
+              hasBorders: true,
+              borderColor: '#FF6600',
+              cornerColor: '#FF6600',
+              cornerStrokeColor: '#FF6600',
+            });
           });
         }
         createCustomSelectionOutline();
       });
       canvas.on('selection:updated', function(e) {
-        // Enable controls for video objects when selected
+        // Enable controls for all selected objects
         if (e.selected && e.selected.length > 0) {
           e.selected.forEach(obj => {
-            if (obj.type === 'videoImage' || obj.type === 'CoverVideo') {
-              obj.set({
-                hasControls: true,
-                hasBorders: true,
-              });
-            }
+            obj.set({
+              hasControls: true,
+              hasBorders: true,
+              borderColor: '#FF6600',
+              cornerColor: '#FF6600',
+              cornerStrokeColor: '#FF6600',
+            });
           });
         }
         createCustomSelectionOutline();
@@ -675,9 +677,25 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
         }
       });
       canvas.on('object:moving', function (e) {
-        if (e.target && selectionLayer) {
-          lastActiveObject = e.target;
-          updateControlPointsPositions(e.target);
+        const obj = e.target;
+        if (!obj) return;
+
+        // Track drag lifecycle - start drag on first move event
+        if (!store.canvasSelection.isDragging) {
+          const element = store.editorElements.find(
+            el => el.fabricObject === obj
+          );
+          if (element) {
+            store.startCanvasDrag(element);
+          }
+        }
+
+        // No position clamping during drag — allow free off-canvas movement.
+        // Snap-back happens on drop (mouse:up / object:modified).
+
+        if (selectionLayer) {
+          lastActiveObject = obj;
+          updateControlPointsPositions(obj);
         }
       });
       
@@ -691,6 +709,38 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
       });
       
       canvas.on('object:modified', function (e) {
+        const obj = e.target;
+        if (obj) {
+          // Snap back so at least 40px of the item is visible on-canvas
+          const bound = obj.getBoundingRect();
+          const canvasW = canvas.getWidth();
+          const canvasH = canvas.getHeight();
+          const offsetX = obj.left - bound.left;
+          const offsetY = obj.top - bound.top;
+          const snapInset = 40;
+          const bottomMaxTop = 250;
+          let snapped = false;
+
+          if (bound.left + bound.width < snapInset) {
+            obj.set('left', -(bound.width - snapInset) + offsetX);
+            snapped = true;
+          } else if (bound.left > canvasW - snapInset) {
+            obj.set('left', canvasW - snapInset + offsetX);
+            snapped = true;
+          }
+          if (bound.top + bound.height < snapInset) {
+            obj.set('top', -(bound.height - snapInset) + offsetY);
+            snapped = true;
+          } else if (bound.top > bottomMaxTop) {
+            obj.set('top', bottomMaxTop + offsetY);
+            snapped = true;
+          }
+
+          if (snapped) {
+            obj.setCoords();
+            canvas.renderAll();
+          }
+        }
         if (e.target && selectionLayer) {
           createCustomSelectionOutline();
         }
@@ -743,6 +793,49 @@ export const useCanvasInitialization = (videoPanelRef, store) => {
         }, 100);
       });
       canvas.on('mouse:up', e => {
+        // Snap back item if its center is off-canvas after drag
+        if (store.canvasSelection.isDragging) {
+          const obj = canvas.getActiveObject();
+          if (obj) {
+            const bound = obj.getBoundingRect();
+            const canvasW = canvas.getWidth();
+            const canvasH = canvas.getHeight();
+            const offsetX = obj.left - bound.left;
+            const offsetY = obj.top - bound.top;
+            const snapInset = 40; // push 40px back inside the canvas
+            // Bottom: keep item above video controls — use 30% of canvas height
+            const bottomMaxTop = canvasH * 0.7;
+            let snapped = false;
+
+            // Left edge: right side of item goes past left edge
+            if (bound.left + bound.width < snapInset) {
+              obj.set('left', -(bound.width - snapInset) + offsetX);
+              snapped = true;
+            }
+            // Right edge: left side of item goes past right edge
+            else if (bound.left > canvasW - snapInset) {
+              obj.set('left', canvasW - snapInset + offsetX);
+              snapped = true;
+            }
+            // Top edge: bottom of item goes past top edge
+            if (bound.top + bound.height < snapInset) {
+              obj.set('top', -(bound.height - snapInset) + offsetY);
+              snapped = true;
+            }
+            // Bottom edge: keep item top above video controls area
+            else if (bound.top > bottomMaxTop) {
+              obj.set('top', bottomMaxTop + offsetY);
+              snapped = true;
+            }
+
+            if (snapped) {
+              obj.setCoords();
+              canvas.renderAll();
+            }
+          }
+          store.endCanvasDrag();
+        }
+
         if (canvas.getActiveObject()) {
           lastActiveObject = canvas.getActiveObject();
         }

@@ -111,6 +111,14 @@ export class Store {
       accumulatedMoves: new Map(),
     };
 
+    // Canvas selection state for tracking selected item and drag lifecycle
+    this.canvasSelection = observable({
+      selectedElementId: null,
+      isDragging: false,
+      dragStartPosition: null, // {x, y}
+      isOffCanvas: false,
+    });
+
     // Bind methods
     this.handleObjectModified = this.handleObjectModified.bind(this);
 
@@ -737,6 +745,7 @@ export class Store {
     });
 
     makeAutoObservable(this, {
+      canvasSelection: false,
       dragState: false,
       moveState: false,
       history: false,
@@ -7538,6 +7547,11 @@ export class Store {
     const previousElement = this.selectedElement;
     this.selectedElement = selectedElement;
 
+    // Sync canvas selection state
+    runInAction(() => {
+      this.canvasSelection.selectedElementId = selectedElement?.id ?? null;
+    });
+
     // Dispatch events for element selection changes
     if (selectedElement && selectedElement !== previousElement) {
       window.dispatchEvent(
@@ -7564,6 +7578,29 @@ export class Store {
       // Clear guidelines when no element is selected
       this.clearGuidelines();
     }
+  }
+
+  startCanvasDrag(element) {
+    runInAction(() => {
+      this.canvasSelection.isDragging = true;
+      this.canvasSelection.dragStartPosition = element?.fabricObject
+        ? { x: element.fabricObject.left, y: element.fabricObject.top }
+        : null;
+    });
+  }
+
+  endCanvasDrag() {
+    runInAction(() => {
+      this.canvasSelection.isDragging = false;
+      this.canvasSelection.dragStartPosition = null;
+      this.canvasSelection.isOffCanvas = false;
+    });
+  }
+
+  setCanvasItemOffCanvas(isOff) {
+    runInAction(() => {
+      this.canvasSelection.isOffCanvas = isOff;
+    });
   }
 
   updateSelectedElement() {
@@ -10593,6 +10630,9 @@ export class Store {
   handleObjectModified(fabricObject, element) {
     // Save current state to history before making changes
     if (!this.isUndoRedoOperation) {
+      if (window.dispatchSaveTimelineState) {
+        window.dispatchSaveTimelineState(this);
+      }
     }
 
     const placement = element.placement;
@@ -13779,6 +13819,238 @@ export class Store {
     this.ghostState.dragOverRowIndex = null;
     this.ghostState.rowInsertPosition = null;
   });
+
+  /**
+   * Split an audio element into two clips at the given splitPoint (ms).
+   * Both clips stay on the same row and preserve correct timing.
+  */
+  splitAudioElement(item, splitPoint) {
+    // Guard: splitPoint must be strictly inside the element's timeframe
+    if (
+      !item ||
+      item.type !== 'audio' ||
+      splitPoint <= item.timeFrame.start ||
+      splitPoint >= item.timeFrame.end
+    ) {
+      return;
+    }
+
+    const originalStart = item.timeFrame.start;
+    const originalEnd = item.timeFrame.end;
+
+    // How far into the source media the split occurs
+    const audioOffset = item.properties?.audioOffset || 0;
+    const splitOffset = audioOffset + (splitPoint - originalStart);
+
+    // ── First half (update existing element in-place) ──
+    const updatedOriginal = {
+      ...item,
+      timeFrame: {
+        start: originalStart,
+        end: splitPoint,
+      },
+      duration: splitPoint - originalStart,
+    };
+
+    // ── Second half (new element) ──
+    const newId = getUid();
+    const newElementId = `audio-${newId}`;
+
+    const secondHalf = {
+      ...item,
+      id: newId,
+      name: `${item.name || 'Audio'} (split)`,
+      fabricObject: null, // will be recreated on refresh
+      timeFrame: {
+        start: splitPoint,
+        end: originalEnd,
+      },
+      duration: originalEnd - splitPoint,
+      properties: {
+        ...item.properties,
+        elementId: newElementId,
+        audioOffset: splitOffset,
+      },
+    };
+
+    runInAction(() => {
+      // Update the first half
+      this.updateEditorElement(updatedOriginal);
+
+      // Insert the second half right after the first
+      const idx = this.editorElements.findIndex(el => el.id === item.id);
+      if (idx !== -1) {
+        this.editorElements.splice(idx + 1, 0, secondHalf);
+      } else {
+        this.editorElements.push(secondHalf);
+      }
+
+      // Create the HTML audio element for the second half
+      const audioEl = document.createElement('audio');
+      audioEl.id = newElementId;
+      audioEl.src = item.properties?.src || '';
+      audioEl.playbackRate = this.playbackRate;
+      audioEl.volume = this.volume;
+      if (splitOffset) {
+        audioEl.currentTime = splitOffset / 1000;
+      }
+      document.body.appendChild(audioEl);
+
+      this.refreshElements();
+
+      // Save timeline state for undo support
+      if (window.dispatchSaveTimelineState && !this.isUndoRedoOperation) {
+        window.dispatchSaveTimelineState(this);
+      }
+    });
+  }
+
+  /**
+   * Split a video element into two clips at the given splitPoint (ms).
+   * Both clips stay on the same row, preserve timing / thumbnails.
+  */
+  splitVideoElement(item, splitPoint) {
+    if (
+      !item ||
+      item.type !== 'video' ||
+      splitPoint <= item.timeFrame.start ||
+      splitPoint >= item.timeFrame.end
+    ) {
+      return;
+    }
+
+    const originalStart = item.timeFrame.start;
+    const originalEnd = item.timeFrame.end;
+    const originalDuration = originalEnd - originalStart;
+
+    // Calculate split ratio to divide thumbnails proportionally
+    const splitRatio = (splitPoint - originalStart) / originalDuration;
+    const thumbnails = item.properties?.thumbnails || [];
+    const splitIdx = Math.round(thumbnails.length * splitRatio);
+    const firstThumbnails = thumbnails.slice(0, Math.max(1, splitIdx));
+    const secondThumbnails = thumbnails.slice(splitIdx);
+
+    // ── First half ──
+    const updatedOriginal = {
+      ...item,
+      timeFrame: {
+        start: originalStart,
+        end: splitPoint,
+      },
+      properties: {
+        ...item.properties,
+        thumbnails: firstThumbnails,
+      },
+    };
+
+    // ── Second half ──
+    const newId = getUid();
+    const newElementId = `video-${newId}`;
+
+    const secondHalf = {
+      ...item,
+      id: newId,
+      name: `${item.name || 'Video'} (split)`,
+      fabricObject: null,
+      timeFrame: {
+        start: splitPoint,
+        end: originalEnd,
+      },
+      properties: {
+        ...item.properties,
+        elementId: newElementId,
+        thumbnails: secondThumbnails.length ? secondThumbnails : firstThumbnails.slice(-1),
+        // Track the media offset so playback starts at the right point
+        videoOffset: (item.properties?.videoOffset || 0) + (splitPoint - originalStart),
+      },
+    };
+
+    runInAction(() => {
+      this.updateEditorElement(updatedOriginal);
+
+      const idx = this.editorElements.findIndex(el => el.id === item.id);
+      if (idx !== -1) {
+        this.editorElements.splice(idx + 1, 0, secondHalf);
+      } else {
+        this.editorElements.push(secondHalf);
+      }
+
+      // Clone the underlying <video> DOM element for the second clip
+      const origVideoEl = document.getElementById(item.properties?.elementId);
+      if (origVideoEl) {
+        const clonedVideo = origVideoEl.cloneNode(true);
+        clonedVideo.id = newElementId;
+        clonedVideo.currentTime = (splitPoint - originalStart) / 1000;
+        document.body.appendChild(clonedVideo);
+      }
+
+      this.refreshElements();
+
+      if (window.dispatchSaveTimelineState && !this.isUndoRedoOperation) {
+        window.dispatchSaveTimelineState(this);
+      }
+    });
+  }
+
+  /**
+   * Split an image element into two clips at the given splitPoint (ms).
+   * For images the visual content is the same; only the duration changes.
+  */
+  splitImageElement(item, splitPoint) {
+    if (
+      (!item) ||
+      (item.type !== 'imageUrl' && item.type !== 'image') ||
+      splitPoint <= item.timeFrame.start ||
+      splitPoint >= item.timeFrame.end
+    ) {
+      return;
+    }
+
+    const originalStart = item.timeFrame.start;
+    const originalEnd = item.timeFrame.end;
+
+    // ── First half ──
+    const updatedOriginal = {
+      ...item,
+      timeFrame: {
+        start: originalStart,
+        end: splitPoint,
+      },
+    };
+
+    // ── Second half ──
+    const newId = getUid();
+
+    const secondHalf = {
+      ...item,
+      id: newId,
+      name: `${item.name || 'Image'} (split)`,
+      fabricObject: null,
+      timeFrame: {
+        start: splitPoint,
+        end: originalEnd,
+      },
+      // Keep the same pointId root but mark as split for scene management
+      pointId: item.pointId ? `${item.pointId}_split_${newId}` : undefined,
+    };
+
+    runInAction(() => {
+      this.updateEditorElement(updatedOriginal);
+
+      const idx = this.editorElements.findIndex(el => el.id === item.id);
+      if (idx !== -1) {
+        this.editorElements.splice(idx + 1, 0, secondHalf);
+      } else {
+        this.editorElements.push(secondHalf);
+      }
+
+      this.refreshElements();
+
+      if (window.dispatchSaveTimelineState && !this.isUndoRedoOperation) {
+        window.dispatchSaveTimelineState(this);
+      }
+    });
+  }
 
   // Delete an entire row: remove all elements in that row and shift rows above it down
   deleteRow = action(rowIndex => {
